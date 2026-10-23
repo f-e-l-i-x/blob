@@ -1,0 +1,432 @@
+<title>Blob Merge</title>
+<style>
+  /* Single deliberate look: grey table, white cup, black ink. */
+  :root { --bg: #c9c9c9; --ink: #111; --score: #8a8a8a; --muted: #333; --veil: rgba(201,201,201,.85); --btn: #1e74c9; --btn-ink: #fff; color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif; touch-action: none; user-select: none; }
+  canvas { display: block; position: fixed; inset: 0; width: 100%; height: 100%; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--veil); flex-direction: column; gap: 14px; text-align: center; padding: 16px; }
+  #overlay.hidden { display: none; }
+  #overlay h1 { margin: 0; font-size: 44px; color: var(--ink); letter-spacing: -1px; }
+  #overlay p { margin: 0; color: var(--muted); max-width: 360px; line-height: 1.4; }
+  #overlay button { font: inherit; font-size: 20px; font-weight: 700; padding: 12px 34px; border-radius: 999px;
+    border: 4px solid var(--ink); background: var(--btn); color: var(--btn-ink); cursor: pointer; }
+  #overlay button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+</style>
+<canvas id="c"></canvas>
+<div id="overlay">
+  <h1>Blob Merge</h1>
+  <p>Grab a blob from the top, drag to aim, release to fling it into the cup.<br>
+     Matching numbers merge. Don't let the cup overflow.</p>
+  <button id="start">Play</button>
+</div>
+<script>
+(() => {
+'use strict';
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const overlay = document.getElementById('overlay');
+const startBtn = document.getElementById('start');
+
+// World is a fixed 400 x 440 coordinate space scaled to fit the screen.
+const W = 400, H = 440;
+const CUP = { l: 12, r: 388, t: 10, b: 430, chamfer: 40 };
+const CONVEYOR_Y = 52;
+const DANGER_Y = 110;
+const GRAVITY = 900;
+const COLORS = {
+  1: '#d81f26', 2: '#e8621a', 4: '#2a9a3a', 8: '#1f86c4', 16: '#2238c9',
+  32: '#a020b0', 64: '#d4205a', 128: '#e6a0c0', 256: '#f0b400', 512: '#14a89a',
+  1024: '#6b3fd1', 2048: '#111111'
+};
+const colorFor = v => COLORS[v] || '#333';
+const radiusFor = v => 11 + Math.log2(v) * 4.2;
+
+let scale = 1, offX = 0, offY = 0, dpr = 1;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  const scoreSpace = innerWidth > innerHeight ? 110 : 0;
+  scale = Math.min((innerWidth - 32 - scoreSpace) / W, (innerHeight - 32 - (scoreSpace ? 0 : 70)) / H);
+  offX = (innerWidth - W * scale - scoreSpace) / 2;
+  offY = (innerHeight - H * scale + (scoreSpace ? 0 : 60)) / 2;
+}
+addEventListener('resize', resize); resize();
+
+// ---------- state ----------
+let blobs, conveyor, ball, score, best = 0, particles, flashes, running = false, over = false;
+let grabbed = null, aim = null, spawnTimer, conveyorSpeed, dangerTime;
+try { best = +localStorage.getItem('blobmerge-best') || 0; } catch (e) {}
+
+function makeBlob(v, x, y) {
+  const n = 9, seed = [];
+  for (let i = 0; i < n; i++) seed.push(0.85 + Math.random() * 0.3);
+  return { v, x, y, vx: 0, vy: 0, r: radiusFor(v), seed, rot: Math.random() * 6.28, spin: 0,
+           squash: 0, born: performance.now(), id: Math.random() };
+}
+
+function randomValue() {
+  const maxOnBoard = blobs.reduce((m, b) => Math.max(m, b.v), 1);
+  const top = Math.max(2, Math.min(5, Math.log2(maxOnBoard)));  // up to 16
+  const p = Math.random();
+  const e = Math.floor(Math.pow(p, 1.8) * top);
+  return 1 << e;
+}
+
+function reset() {
+  blobs = []; conveyor = []; particles = []; flashes = [];
+  score = 0; spawnTimer = 0; conveyorSpeed = 28; dangerTime = 0; over = false;
+  ball = { x: 200, y: 200, vx: 140, vy: -110, r: 7 };
+  for (let i = 0; i < 4; i++) addToConveyor(40 + i * 95);
+}
+
+function addToConveyor(x) {
+  const b = makeBlob(randomValue(), x, CONVEYOR_Y);
+  b.stretch = 1.6;  // conveyor blobs look like stretched pills
+  conveyor.push(b);
+}
+
+// ---------- input ----------
+function toWorld(e) {
+  return { x: (e.clientX - offX) / scale, y: (e.clientY - offY) / scale };
+}
+cv.addEventListener('pointerdown', e => {
+  if (!running) return;
+  const p = toWorld(e);
+  let pick = null, bestD = 1e9;
+  for (const b of conveyor) {
+    const d = Math.hypot(b.x - p.x, b.y - p.y);
+    if (d < b.r * 1.9 + 14 && d < bestD) { bestD = d; pick = b; }
+  }
+  if (pick) { grabbed = pick; aim = { x: p.x, y: p.y }; cv.setPointerCapture(e.pointerId); }
+});
+cv.addEventListener('pointermove', e => { if (grabbed) aim = toWorld(e); });
+const release = () => {
+  if (!grabbed) return;
+  const b = grabbed;
+  const dx = aim.x - b.x, dy = aim.y - b.y;
+  const len = Math.hypot(dx, dy);
+  conveyor.splice(conveyor.indexOf(b), 1);
+  b.stretch = 1.6;
+  if (len > 8) {
+    const power = Math.min(len, 200) * 4.2;
+    b.vx = dx / len * power; b.vy = dy / len * power;
+  } else { b.vx = 0; b.vy = 60; }
+  b.spin = (Math.random() - .5) * 6;
+  blobs.push(b);
+  grabbed = null; aim = null;
+};
+cv.addEventListener('pointerup', release);
+cv.addEventListener('pointercancel', release);
+
+// ---------- physics ----------
+// Cup wall as segments (inner side). Bottom corners are chamfered.
+const C = CUP;
+const SEGS = [
+  [C.l, C.t, C.l, C.b - C.chamfer],
+  [C.l, C.b - C.chamfer, C.l + C.chamfer, C.b],
+  [C.l + C.chamfer, C.b, C.r - C.chamfer, C.b],
+  [C.r - C.chamfer, C.b, C.r, C.b - C.chamfer],
+  [C.r, C.b - C.chamfer, C.r, C.t],
+  [C.r, C.t, C.l, C.t],
+];
+const BUMPERS = [{ x: C.l, y: 175, r: 22 }, { x: C.r, y: 175, r: 22 }];
+
+function collideSeg(o, s, bounce) {
+  const [x1, y1, x2, y2] = s;
+  const ex = x2 - x1, ey = y2 - y1, L2 = ex * ex + ey * ey;
+  let t = ((o.x - x1) * ex + (o.y - y1) * ey) / L2;
+  t = Math.max(0, Math.min(1, t));
+  const px = x1 + ex * t, py = y1 + ey * t;
+  let dx = o.x - px, dy = o.y - py, d = Math.hypot(dx, dy);
+  if (d >= o.r || d === 0) return false;
+  const nx = dx / d, ny = dy / d;
+  o.x += nx * (o.r - d); o.y += ny * (o.r - d);
+  const vn = o.vx * nx + o.vy * ny;
+  if (vn < 0) {
+    o.vx -= (1 + bounce) * vn * nx; o.vy -= (1 + bounce) * vn * ny;
+    const tx = -ny, ty = nx, vt = o.vx * tx + o.vy * ty;
+    o.vx -= vt * tx * 0.08; o.vy -= vt * ty * 0.08;
+    if (o.squash !== undefined) o.squash = Math.min(0.35, o.squash + Math.abs(vn) / 1500);
+  }
+  return true;
+}
+function collideCircle(o, c, bounce) {
+  const dx = o.x - c.x, dy = o.y - c.y, d = Math.hypot(dx, dy), m = o.r + c.r;
+  if (d >= m || d === 0) return false;
+  const nx = dx / d, ny = dy / d;
+  o.x = c.x + nx * m; o.y = c.y + ny * m;
+  const vn = o.vx * nx + o.vy * ny;
+  if (vn < 0) { o.vx -= (1 + bounce) * vn * nx; o.vy -= (1 + bounce) * vn * ny; }
+  return true;
+}
+
+function merge(a, b) {
+  const v = a.v * 2;
+  const nb = makeBlob(v, (a.x + b.x) / 2, (a.y + b.y) / 2);
+  nb.vx = (a.vx + b.vx) / 2; nb.vy = (a.vy + b.vy) / 2 - 80;
+  nb.squash = 0.35; nb.pop = 1;
+  blobs.splice(blobs.indexOf(a), 1);
+  blobs.splice(blobs.indexOf(b), 1);
+  blobs.push(nb);
+  score += v;
+  flashes.push({ x: nb.x, y: nb.y, r: nb.r * 2.6, t: 0, text: '+' + v });
+  for (let i = 0; i < 14; i++) {
+    const ang = Math.random() * 6.28, sp = 60 + Math.random() * 160;
+    particles.push({ x: nb.x, y: nb.y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp,
+                     life: 0.5 + Math.random() * 0.3, c: colorFor(v) });
+  }
+  conveyorSpeed = Math.min(70, 28 + score / 60);
+}
+
+function step(dt) {
+  // conveyor: blobs drift right and wrap around
+  for (const b of conveyor) {
+    if (b === grabbed) continue;
+    b.x += conveyorSpeed * dt;
+    b.stretch += (1.6 - b.stretch) * dt * 5;
+  }
+  conveyor = conveyor.filter(b => b === grabbed || b.x < W + 40);
+  // keep a steady supply
+  spawnTimer -= dt;
+  const minX = conveyor.reduce((m, b) => Math.min(m, b.x), 1e9);
+  if (conveyor.length < 5 && (minX > 70 || conveyor.length === 0) && spawnTimer <= 0) {
+    addToConveyor(-30); spawnTimer = 0.6;
+  }
+
+  // blobs
+  const SUB = 4, h = dt / SUB;
+  for (let s = 0; s < SUB; s++) {
+    for (const b of blobs) {
+      b.vy += GRAVITY * h;
+      b.vx *= 1 - 0.4 * h; b.vy *= 1 - 0.2 * h;
+      b.x += b.vx * h; b.y += b.vy * h;
+      b.rot += b.spin * h; b.spin *= 1 - 1.5 * h;
+      for (const sg of SEGS) collideSeg(b, sg, 0.25);
+      for (const bp of BUMPERS) if (collideCircle(b, bp, 0.9)) b.squash = 0.3;
+    }
+    // blob-blob
+    let merged = null;
+    for (let i = 0; i < blobs.length && !merged; i++) {
+      for (let j = i + 1; j < blobs.length; j++) {
+        const a = blobs[i], b = blobs[j];
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 0.001, m = a.r + b.r;
+        if (d >= m) continue;
+        if (a.v === b.v) { merged = [a, b]; break; }
+        const nx = dx / d, ny = dy / d, over = m - d;
+        const ma = a.r * a.r, mb = b.r * b.r, tot = ma + mb;
+        a.x -= nx * over * mb / tot; a.y -= ny * over * mb / tot;
+        b.x += nx * over * ma / tot; b.y += ny * over * ma / tot;
+        const rv = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+        if (rv < 0) {
+          const jimp = -(1 + 0.15) * rv / (1 / ma + 1 / mb);
+          a.vx -= jimp * nx / ma; a.vy -= jimp * ny / ma;
+          b.vx += jimp * nx / mb; b.vy += jimp * ny / mb;
+          const k = Math.min(0.3, -rv / 1800);
+          a.squash = Math.max(a.squash, k); b.squash = Math.max(b.squash, k);
+        }
+      }
+    }
+    if (merged) merge(merged[0], merged[1]);
+
+    // grey ball: no gravity, bounces off everything forever
+    ball.x += ball.vx * h; ball.y += ball.vy * h;
+    for (const sg of SEGS) collideSeg(ball, sg, 1);
+    for (const bp of BUMPERS) collideCircle(ball, bp, 1);
+    for (const b of blobs) {
+      const dx = b.x - ball.x, dy = b.y - ball.y, d = Math.hypot(dx, dy), m = b.r + ball.r;
+      if (d < m && d > 0) {
+        const nx = dx / d, ny = dy / d;
+        ball.x = b.x - nx * m; ball.y = b.y - ny * m;
+        const vn = ball.vx * nx + ball.vy * ny;
+        if (vn > 0) { ball.vx -= 2 * vn * nx; ball.vy -= 2 * vn * ny;
+                      b.vx += nx * vn * 0.5; b.vy += ny * vn * 0.5; b.squash = 0.2; }
+      }
+    }
+  }
+  const sp = Math.hypot(ball.vx, ball.vy) || 1, target = 190;
+  ball.vx *= 1 + (target / sp - 1) * dt; ball.vy *= 1 + (target / sp - 1) * dt;
+
+  for (const b of blobs) {
+    b.squash *= 1 - 6 * dt;
+    if (b.stretch) b.stretch += (1 - b.stretch) * dt * 4;
+    if (b.pop) b.pop = Math.max(0, b.pop - dt * 3);
+  }
+  for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt; p.life -= dt; }
+  particles = particles.filter(p => p.life > 0);
+  for (const f of flashes) f.t += dt;
+  flashes = flashes.filter(f => f.t < 0.8);
+
+  // overflow check: a settled blob above the danger line for too long ends the game
+  const now = performance.now();
+  const danger = blobs.some(b => b.y - b.r < DANGER_Y && now - b.born > 1500 && Math.abs(b.vy) < 60);
+  dangerTime = danger ? dangerTime + dt : Math.max(0, dangerTime - dt * 2);
+  if (dangerTime > 2) gameOver();
+}
+
+function gameOver() {
+  running = false; over = true;
+  if (score > best) { best = score; try { localStorage.setItem('blobmerge-best', best); } catch (e) {} }
+  overlay.querySelector('h1').textContent = 'Overflow!';
+  overlay.querySelector('p').innerHTML = `Score <b>${score}</b> &nbsp;·&nbsp; Best <b>${best}</b>`;
+  startBtn.textContent = 'Play again';
+  overlay.classList.remove('hidden');
+}
+
+// ---------- drawing ----------
+function blobPath(b, stretchX) {
+  const n = b.seed.length, t = performance.now() / 1000;
+  const sq = b.squash || 0;
+  const sx = (stretchX || 1) * (1 + sq), sy = (1 - sq * 0.8) / Math.sqrt(stretchX || 1);
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = b.rot + i / n * Math.PI * 2;
+    const wob = 1 + Math.sin(t * 3 + i * 1.7 + b.id * 10) * 0.03;
+    const rr = b.r * b.seed[i] * wob * (1 + (b.pop || 0) * 0.25);
+    pts.push([Math.cos(a) * rr * sx, Math.sin(a) * rr * sy]);
+  }
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[i], p1 = pts[(i + 1) % n];
+    const mx = (p0[0] + p1[0]) / 2, my = (p0[1] + p1[1]) / 2;
+    if (i === 0) { const pl = pts[n - 1]; ctx.moveTo((pl[0] + p0[0]) / 2, (pl[1] + p0[1]) / 2); }
+    ctx.quadraticCurveTo(p0[0], p0[1], mx, my);
+  }
+  ctx.closePath();
+}
+
+function drawBlob(b, stretchX, selected) {
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  blobPath(b, stretchX);
+  ctx.fillStyle = colorFor(b.v); ctx.fill();
+  if (selected) { ctx.lineWidth = 3.5; ctx.strokeStyle = '#111'; ctx.stroke(); }
+  ctx.restore();
+  ctx.save();
+  ctx.translate(b.x, b.y);
+  ctx.fillStyle = b.v === 128 ? '#7a2850' : 'rgba(255,255,255,.88)';
+  ctx.font = `700 ${Math.max(9, b.r * 0.62)}px system-ui, sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(b.v, 0, 1);
+  ctx.restore();
+}
+
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#c9c9c9'; ctx.fillRect(0, 0, innerWidth, innerHeight);
+
+  // big score, rotated, beside (landscape) or above (portrait) the cup
+  ctx.save();
+  ctx.fillStyle = '#8a8a8a';
+  ctx.font = `900 ${innerWidth > innerHeight ? 64 : 48}px system-ui, sans-serif`;
+  if (innerWidth > innerHeight) {
+    ctx.translate(offX + W * scale + 60, offY + 30);
+    ctx.rotate(Math.PI / 2);
+    ctx.textBaseline = 'middle';
+    ctx.fillText(score, 0, 0);
+    ctx.font = '600 14px system-ui, sans-serif';
+    ctx.fillText('best ' + best, 0, -46);
+  } else {
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText(score, innerWidth / 2, offY - 4);
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillText('best ' + best, innerWidth / 2, offY - 52);
+  }
+  ctx.restore();
+
+  ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * offX, dpr * offY);
+
+  // cup interior
+  ctx.beginPath();
+  ctx.moveTo(SEGS[0][0], SEGS[0][1]);
+  for (const s of SEGS) ctx.lineTo(s[2], s[3]);
+  ctx.closePath();
+  ctx.fillStyle = '#fff'; ctx.fill();
+
+  // danger line pulses when you're about to overflow
+  if (dangerTime > 0) {
+    ctx.strokeStyle = `rgba(216,31,38,${0.3 + 0.5 * Math.abs(Math.sin(performance.now() / 120))})`;
+    ctx.setLineDash([8, 8]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(C.l, DANGER_Y); ctx.lineTo(C.r, DANGER_Y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // merge flashes (soft white glow like the original)
+  for (const f of flashes) {
+    const k = f.t / 0.8;
+    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, f.r);
+    g.addColorStop(0, `rgba(255,255,255,${0.95 * (1 - k)})`);
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 7); ctx.fill();
+  }
+
+  for (const b of blobs) drawBlob(b, b.stretch || 1, false);
+  for (const b of conveyor) drawBlob(b, b.stretch, b === grabbed);
+
+  for (const f of flashes) {
+    const k = f.t / 0.8;
+    ctx.fillStyle = `rgba(30,30,30,${1 - k})`;
+    ctx.font = '800 16px system-ui, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x, f.y - 24 - k * 30);
+  }
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life * 2);
+    ctx.fillStyle = p.c; ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // grey ball
+  ctx.fillStyle = '#c4c4c4'; ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(ball.x, ball.y, 2.2, 0, 7); ctx.fill();
+
+  // aim arrow
+  if (grabbed && aim) {
+    const dx = aim.x - grabbed.x, dy = aim.y - grabbed.y, len = Math.min(Math.hypot(dx, dy), 200);
+    if (len > 8) {
+      const a = Math.atan2(dy, dx), ex = grabbed.x + Math.cos(a) * len, ey = grabbed.y + Math.sin(a) * len;
+      ctx.strokeStyle = '#111'; ctx.lineWidth = 2.5; ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(grabbed.x, grabbed.y); ctx.lineTo(ex, ey);
+      ctx.moveTo(ex, ey); ctx.lineTo(ex - Math.cos(a - .45) * 14, ey - Math.sin(a - .45) * 14);
+      ctx.moveTo(ex, ey); ctx.lineTo(ex - Math.cos(a + .45) * 14, ey - Math.sin(a + .45) * 14);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(grabbed.x, grabbed.y, 3, 0, 7); ctx.fill();
+  }
+
+  // blue bumpers
+  for (const bp of BUMPERS) {
+    ctx.fillStyle = '#1e64c8'; ctx.beginPath(); ctx.arc(bp.x, bp.y, bp.r, 0, 7); ctx.fill();
+    ctx.fillStyle = '#0d2f66'; ctx.beginPath(); ctx.arc(bp.x, bp.y, 3, 0, 7); ctx.fill();
+  }
+
+  // cup outline
+  ctx.beginPath();
+  ctx.moveTo(SEGS[0][0], SEGS[0][1]);
+  for (const s of SEGS.slice(0, 5)) ctx.lineTo(s[2], s[3]);
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 9; ctx.lineJoin = 'round'; ctx.stroke();
+  // top rail with blue progress bars (shows conveyor speed)
+  ctx.strokeStyle = '#111'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(C.l, C.t); ctx.lineTo(C.r, C.t); ctx.stroke();
+  const k = (conveyorSpeed - 28) / 42;
+  ctx.strokeStyle = '#1e74c9'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(C.l + 6, C.t + 4); ctx.lineTo(C.l + 6 + 60 + 100 * k, C.t + 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(C.r - 6, C.t + 4); ctx.lineTo(C.r - 6 - 60 - 100 * k, C.t + 4); ctx.stroke();
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.033, (now - last) / 1000); last = now;
+  if (running) step(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+startBtn.addEventListener('click', () => {
+  reset(); running = true; overlay.classList.add('hidden'); last = performance.now();
+});
+reset();
+requestAnimationFrame(frame);
+})();
+</script>
