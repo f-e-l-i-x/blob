@@ -25,6 +25,7 @@ final class GameScene: SKScene {
     private var flashNodes: [(glow: SKSpriteNode, text: SKLabelNode)] = []
     private var particleNodes: [SKShapeNode] = []
     private let flashTexture = GameScene.makeFlashTexture()
+    private var warmup: SKNode?
 
     override init(size: CGSize) {
         super.init(size: size)
@@ -34,10 +35,13 @@ final class GameScene: SKScene {
         buildCup()
         buildOverlays()
         buildScore()
+        buildWarmup()
         game.reset()
     }
 
     func start() {
+        warmup?.removeFromParent()
+        warmup = nil
         game.reset()
         game.running = true
     }
@@ -215,6 +219,46 @@ final class GameScene: SKScene {
             .font: UIFont.systemFont(ofSize: size, weight: weight),
             .foregroundColor: K.scoreInk,
         ])
+    }
+
+    // Draws a hidden copy of everything that first shows up during play (every
+    // value's blob and number, touch circle, aim arrow, danger line, flash, "+N", particle)
+    // behind the start screen. The GPU then sets them up before Play instead of stuttering
+    // the first time each appears in the game.
+    private func buildWarmup() {
+        let warm = SKNode()
+        warm.zPosition = Z.cup - 1  // under the white cup interior, so nothing shows
+        for (i, v) in K.colors.keys.sorted().enumerated() {
+            let n = BlobNode()
+            let b = Blob(v: v, x: 70 + CGFloat(i % 4) * 85, y: 180 + CGFloat(i / 4) * 80, born: 0)
+            n.show(b, stretchX: 1, selected: i == 0, t: 0, z: 0)
+            warm.addChild(n)
+        }
+        let line = CGMutablePath()
+        line.move(to: CGPoint(x: 100, y: 300))
+        line.addLine(to: CGPoint(x: 200, y: 330))
+        let arrowCopy = arrow.copy() as! SKShapeNode
+        arrowCopy.path = line
+        let glow = SKSpriteNode(texture: flashTexture, size: CGSize(width: 60, height: 60))
+        let plus = SKLabelNode()
+        plus.attributedText = NSAttributedString(string: "+2", attributes: [
+            .font: UIFont.systemFont(ofSize: 16, weight: .heavy), .foregroundColor: UIColor.darkGray,
+        ])
+        plus.yScale = -1
+        let particle = SKShapeNode(circleOfRadius: 3)
+        particle.fillColor = K.color(for: 1)
+        particle.strokeColor = .clear
+        let dots = [fingerCircle.copy(), fingerDot.copy(), grabDot.copy()].compactMap { $0 as? SKNode } + [glow, plus, particle]
+        for n in dots { n.position = CGPoint(x: 200, y: 250) }
+        // The arrow and danger-line paths already lie inside the cup, so they stay where they are.
+        for n in dots + [arrowCopy, dangerLine.copy() as! SKShapeNode] {
+            n.isHidden = false
+            n.zPosition = 0  // copies keep their own z; keep them all under the cup
+            warm.addChild(n)
+        }
+        world.addChild(warm)
+        warm.run(.sequence([.wait(forDuration: 1), .removeFromParent()]))
+        warmup = warm
     }
 
     private func buildScore() {

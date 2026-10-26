@@ -8,12 +8,22 @@ struct ContentView: View {
         ZStack {
             SpriteView(scene: model.scene)
                 .ignoresSafeArea()
-            if model.phase != .playing {
-                OverlayView(model: model)
-            }
+            OverlayHost(model: model)
         }
         .background(Color(K.bg))
         .statusBarHidden()
+    }
+}
+
+// Reads `phase` in its own body, so showing or hiding the overlay doesn't make SwiftUI
+// re-evaluate ContentView and the SpriteView.
+private struct OverlayHost: View {
+    let model: GameModel
+
+    var body: some View {
+        if model.phase != .playing {
+            OverlayView(model: model)
+        }
     }
 }
 

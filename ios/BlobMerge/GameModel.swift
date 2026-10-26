@@ -28,6 +28,7 @@ final class GameModel {
     }
 
     func play() {
+        Haptics.prepare()
         scene.start()
         phase = .playing
     }
