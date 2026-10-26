@@ -14,6 +14,16 @@ enum K {
         static let chamfer: CGFloat = 40
     }
 
+    // iOS screen layout, in points: header with the score, the jar machine, bottom bar.
+    enum Layout {
+        static let headerHeight: CGFloat = 86
+        static let barHeight: CGFloat = 56
+        static let sideMargin: CGFloat = 8
+        // World-space extent of the machine: top of the dispenser lid to the stand's shadow.
+        static let machineTop: CGFloat = -46
+        static let machineBottom: CGFloat = 482
+    }
+
     static let conveyorY: CGFloat = 52
     static let dangerY: CGFloat = 110
     static let gravity: CGFloat = 900
@@ -41,7 +51,7 @@ enum K {
     // Page colours
     static let bg = UIColor(hex: 0xc9c9c9)
     static let ink = UIColor(hex: 0x111111)
-    static let scoreInk = UIColor(hex: 0x8a8a8a)
+    static let scoreInk = UIColor(hex: 0x6a7079)
     static let muted = UIColor(hex: 0x333333)
     static let button = UIColor(hex: 0x1e74c9)
 }

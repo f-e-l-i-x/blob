@@ -9,9 +9,13 @@ final class GameScene: SKScene {
     private let background = SKSpriteNode()
     private var backgroundSize = CGSize.zero
     private var bumperNodes: [(stud: SKSpriteNode, glow: SKSpriteNode)] = []
+    private let meter = SKShapeNode()
+    private var shownMeter: CGFloat = -1
 
-    private let speedBarL = SKShapeNode()
-    private let speedBarR = SKShapeNode()
+    /// Safe-area insets from SwiftUI, so the header and bottom bar avoid the notch and home bar.
+    var safeInsets = UIEdgeInsets.zero {
+        didSet { if safeInsets != oldValue { layout() } }
+    }
 
     let game = GameWorld()
     private var lastTime: TimeInterval?
@@ -55,6 +59,17 @@ final class GameScene: SKScene {
         game.running = true
     }
 
+    func pause() {
+        game.running = false
+        activeTouch = nil
+        game.cancelTouch()
+    }
+
+    func resume() {
+        lastTime = nil  // no catch-up jump after the pause
+        game.running = true
+    }
+
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override func didChangeSize(_ oldSize: CGSize) {
@@ -62,12 +77,17 @@ final class GameScene: SKScene {
         layout()
     }
 
-    // Portrait branch of resize() in index.html.
+    // Score header at the top, bottom bar at the bottom (both inside the safe area), and the
+    // machine (lid, jar, stand) scaled to fit and centred between them. offY is the screen y
+    // (from the top) of world y = 0.
     private func layout() {
-        let w = size.width, h = size.height
-        scale = min((w - 32) / K.W, (h - 32 - 70) / K.H)
+        let w = size.width, h = size.height, L = K.Layout.self
+        let top = safeInsets.top + L.headerHeight
+        let bottom = h - safeInsets.bottom - L.barHeight - 8
+        let machineH = L.machineBottom - L.machineTop
+        scale = min((w - L.sideMargin * 2) / K.W, (bottom - top) / machineH)
         offX = (w - K.W * scale) / 2
-        offY = (h - K.H * scale + 60) / 2
+        offY = top + (bottom - top - machineH * scale) / 2 - L.machineTop * scale
         worldOrigin = CGPoint(x: offX, y: h - offY)
         world.position = worldOrigin
         world.xScale = scale
@@ -78,8 +98,8 @@ final class GameScene: SKScene {
             background.size = size
             background.position = CGPoint(x: w / 2, y: h / 2)
         }
-        scoreLabel.position = CGPoint(x: w / 2, y: h - (offY - 4))
-        bestLabel.position = CGPoint(x: w / 2, y: h - (offY - 52))
+        scoreLabel.position = CGPoint(x: w / 2, y: h - (safeInsets.top + 60))
+        bestLabel.position = CGPoint(x: w / 2, y: h - (safeInsets.top + 80))
     }
 
     // MARK: - Loop
@@ -212,7 +232,14 @@ final class GameScene: SKScene {
             arrow.isHidden = true
         }
 
-        updateSpeedBars(conveyorSpeed: game.conveyorSpeed)
+        // speed meter on the dispenser: a sliver at the start speed, full at the top speed
+        let k = 0.12 + 0.88 * (game.conveyorSpeed - 28) / 42
+        if abs(k - shownMeter) > 0.002 {
+            shownMeter = k
+            let r = Backdrop.meterRect
+            meter.path = CGPath(roundedRect: CGRect(x: r.minX, y: r.minY, width: r.width * k, height: r.height),
+                                cornerWidth: r.height / 2, cornerHeight: r.height / 2, transform: nil)
+        }
 
         for (i, n) in bumperNodes.enumerated() {
             let g = game.bumperGlow[i]
@@ -240,16 +267,15 @@ final class GameScene: SKScene {
                 scoreLabel.run(back, withKey: "punch")
             }
             shownScore = game.score; shownBest = game.best
-            scoreLabel.attributedText = scoreText(String(game.score), size: 48, weight: .black)
-            bestLabel.attributedText = scoreText("best \(game.best)", size: 13, weight: .semibold)
+            scoreLabel.attributedText = scoreText(String(game.score), size: 50, weight: .black, kern: 0)
+            bestLabel.attributedText = scoreText("BEST \(game.best)", size: 12, weight: .bold, kern: 1.5)
         }
     }
 
-    private func scoreText(_ s: String, size: CGFloat, weight: UIFont.Weight) -> NSAttributedString {
-        NSAttributedString(string: s, attributes: [
-            .font: UIFont.systemFont(ofSize: size, weight: weight),
-            .foregroundColor: K.scoreInk,
-        ])
+    private func scoreText(_ s: String, size: CGFloat, weight: UIFont.Weight, kern: CGFloat) -> NSAttributedString {
+        var font = UIFont.systemFont(ofSize: size, weight: weight)
+        if let rounded = font.fontDescriptor.withDesign(.rounded) { font = UIFont(descriptor: rounded, size: size) }
+        return NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: K.scoreInk, .kern: kern])
     }
 
     // Draws a hidden copy of everything that first shows up during play (every
@@ -333,24 +359,35 @@ final class GameScene: SKScene {
 
     private enum Z {
         static let cup: CGFloat = 0, danger: CGFloat = 1, flash: CGFloat = 2, blobs: CGFloat = 3
-        static let conveyor: CGFloat = 4, flashText: CGFloat = 5, particles: CGFloat = 6
-        static let finger: CGFloat = 7, arrow: CGFloat = 8, bumpers: CGFloat = 9
-        static let outline: CGFloat = 10, rail: CGFloat = 11
+        static let conveyor: CGFloat = 4, glassFront: CGFloat = 4.5, pipes: CGFloat = 4.6
+        static let flashText: CGFloat = 5, particles: CGFloat = 6
+        static let finger: CGFloat = 7, arrow: CGFloat = 8, bumpers: CGFloat = 9, stand: CGFloat = 9.5
+        static let walls: CGFloat = 10, lid: CGFloat = 11
     }
 
+    // The machine: stand shadow, jar back, glass front, pipes, stand, lid with speed meter,
+    // bumpers and glass walls. Blobs move between the jar's back and its front reflections.
     private func buildCup() {
-        let C = K.Cup.self
-
-        let center = CGPoint(x: K.W / 2, y: K.H / 2)
-        let pad = Backdrop.shadowPad
-        let shadow = SKSpriteNode(texture: Backdrop.cupShadow(), size: CGSize(width: K.W + pad * 2, height: K.H + pad * 2))
-        let cup = SKSpriteNode(texture: Backdrop.cupInterior(), size: CGSize(width: K.W, height: K.H))
-        for (n, z) in [(shadow, Z.cup - 2), (cup, Z.cup)] {
-            n.position = center
+        func place(_ texture: SKTexture, in rect: CGRect, z: CGFloat) {
+            let n = SKSpriteNode(texture: texture, size: rect.size)
+            n.position = CGPoint(x: rect.midX, y: rect.midY)
             n.yScale = -1  // undo the world flip
             n.zPosition = z
             world.addChild(n)
         }
+        place(Backdrop.standShadow(), in: Backdrop.standShadowRect, z: Z.cup - 2)
+        place(Backdrop.cupInterior(), in: Backdrop.cupRect, z: Z.cup)
+        place(Backdrop.glassFront(), in: Backdrop.cupRect, z: Z.glassFront)
+        place(Backdrop.pipe(left: true), in: Backdrop.pipeRect(left: true), z: Z.pipes)
+        place(Backdrop.pipe(left: false), in: Backdrop.pipeRect(left: false), z: Z.pipes)
+        place(Backdrop.stand(), in: Backdrop.standRect, z: Z.stand)
+        place(Backdrop.lid(), in: Backdrop.lidRect, z: Z.lid)
+
+        meter.fillColor = UIColor(hex: 0x3ea2ff)
+        meter.strokeColor = UIColor(hex: 0x9fd2ff, alpha: 0.8)
+        meter.lineWidth = 1
+        meter.zPosition = Z.lid + 0.1
+        world.addChild(meter)
 
         // shiny studs that light up and pulse when a blob hits them
         for bp in K.bumpers {
@@ -369,41 +406,15 @@ final class GameScene: SKScene {
             bumperNodes.append((stud, glow))
         }
 
-        let outlinePath = CGMutablePath()
-        outlinePath.move(to: CGPoint(x: K.segs[0].x1, y: K.segs[0].y1))
-        for s in K.segs.prefix(5) { outlinePath.addLine(to: CGPoint(x: s.x2, y: s.y2)) }
-        let outline = stroke(outlinePath, color: K.ink, width: 9)
-        outline.lineJoin = .round
-        outline.zPosition = Z.outline
-        world.addChild(outline)
-
-        let railPath = CGMutablePath()
-        railPath.move(to: CGPoint(x: C.l, y: C.t))
-        railPath.addLine(to: CGPoint(x: C.r, y: C.t))
-        let rail = stroke(railPath, color: K.ink, width: 5)
-        rail.zPosition = Z.rail
-        world.addChild(rail)
-
-        for bar in [speedBarL, speedBarR] {
-            bar.strokeColor = K.button
-            bar.lineWidth = 4
-            bar.zPosition = Z.rail + 0.1
-            world.addChild(bar)
+        // Thick glass walls: a darker edge, a pale translucent body and a bright centre line.
+        // The bumpers show through the glass.
+        for (color, width) in [(UIColor(hex: 0x55636f, alpha: 0.6), 14.0), (UIColor(hex: 0xd5e0ea, alpha: 0.75), 11.0),
+                               (UIColor(white: 1, alpha: 0.9), 2.5)] as [(UIColor, CGFloat)] {
+            let wall = stroke(Backdrop.wallPath, color: color, width: width)
+            wall.lineJoin = .round
+            wall.zPosition = Z.walls
+            world.addChild(wall)
         }
-        updateSpeedBars(conveyorSpeed: 28)
-    }
-
-    private func updateSpeedBars(conveyorSpeed: CGFloat) {
-        let C = K.Cup.self
-        let k = (conveyorSpeed - 28) / 42
-        let l = CGMutablePath()
-        l.move(to: CGPoint(x: C.l + 6, y: C.t + 4))
-        l.addLine(to: CGPoint(x: C.l + 6 + 60 + 100 * k, y: C.t + 4))
-        speedBarL.path = l
-        let r = CGMutablePath()
-        r.move(to: CGPoint(x: C.r - 6, y: C.t + 4))
-        r.addLine(to: CGPoint(x: C.r - 6 - 60 - 100 * k, y: C.t + 4))
-        speedBarR.path = r
     }
 
     // MARK: - Helpers

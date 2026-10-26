@@ -120,6 +120,13 @@ final class GameWorld {
         if grabbed != nil { aim = p }
     }
 
+    /// Lets go without flinging: a grabbed blob just stays on the conveyor (used when pausing).
+    func cancelTouch() {
+        finger.down = false
+        grabbed = nil
+        aim = nil
+    }
+
     func release() {
         finger.down = false
         guard let b = grabbed, let aim else { return }

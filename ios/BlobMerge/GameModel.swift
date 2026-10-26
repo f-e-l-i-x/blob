@@ -1,15 +1,16 @@
 import Observation
 import SpriteKit
 
-// Bridges the SpriteKit scene to the SwiftUI overlay (#overlay in index.html).
+// Bridges the SpriteKit scene to the SwiftUI overlay (#overlay in index.html) and bottom bar.
 @MainActor
 @Observable
 final class GameModel {
-    enum Phase { case start, playing, over }
+    enum Phase { case start, playing, paused, over }
 
     private(set) var phase: Phase = .start
     private(set) var score = 0
     private(set) var best = 0
+    private(set) var hapticsOn = Haptics.enabled
 
     @ObservationIgnored let scene: GameScene
 
@@ -31,5 +32,24 @@ final class GameModel {
         Haptics.prepare()
         scene.start()
         phase = .playing
+    }
+
+    func pause() {
+        guard phase == .playing else { return }
+        scene.pause()
+        score = scene.game.score
+        phase = .paused
+    }
+
+    func resume() {
+        guard phase == .paused else { return }
+        Haptics.prepare()
+        scene.resume()
+        phase = .playing
+    }
+
+    func toggleHaptics() {
+        Haptics.enabled.toggle()
+        hapticsOn = Haptics.enabled
     }
 }
