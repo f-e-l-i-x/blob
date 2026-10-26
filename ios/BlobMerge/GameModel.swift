@@ -18,7 +18,7 @@ final class GameModel {
         scene.scaleMode = .resizeFill
         best = scene.game.best
         scene.game.onFling = { Haptics.fling() }
-        scene.game.onMerge = { _ in Haptics.merge() }
+        scene.game.onMerge = { Haptics.merge($0) }
         scene.game.onGameOver = { [weak self] in
             guard let self else { return }
             score = scene.game.score

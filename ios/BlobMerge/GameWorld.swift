@@ -48,12 +48,17 @@ struct Flash {
     let x, y, r: CGFloat
     var t: CGFloat
     let text: String
+    // iOS only, for the juicier merge effects: merged value, the new blob's radius, a unique id.
+    let v: Int
+    let blobR: CGFloat
+    let id: Int
 }
 
 final class GameWorld {
     var blobs: [Blob] = []
     var particles: [Particle] = []
     var flashes: [Flash] = []
+    private var flashCount = 0
     var score = 0
     var best = UserDefaults.standard.integer(forKey: GameWorld.bestKey)
     var dangerTime: CGFloat = 0
@@ -172,9 +177,12 @@ final class GameWorld {
         blobs.removeAll { $0 === a || $0 === b }
         blobs.append(nb)
         score += v
-        flashes.append(Flash(x: nb.x, y: nb.y, r: nb.r * 2.6, t: 0, text: "+\(v)"))
-        for _ in 0..<14 {
-            let ang = CGFloat.random(in: 0..<1) * 6.28, sp = 60 + CGFloat.random(in: 0..<1) * 160
+        flashCount += 1
+        flashes.append(Flash(x: nb.x, y: nb.y, r: nb.r * 2.6, t: 0, text: "+\(v)", v: v, blobR: nb.r, id: flashCount))
+        // iOS only: big merges (512 and up) burst twice as many, faster particles.
+        let big = v >= 512
+        for _ in 0..<(big ? 28 : 14) {
+            let ang = CGFloat.random(in: 0..<1) * 6.28, sp = (60 + CGFloat.random(in: 0..<1) * 160) * (big ? 1.4 : 1)
             particles.append(Particle(x: nb.x, y: nb.y, vx: cos(ang) * sp, vy: sin(ang) * sp,
                                       life: 0.5 + CGFloat.random(in: 0..<1) * 0.3, v: v))
         }

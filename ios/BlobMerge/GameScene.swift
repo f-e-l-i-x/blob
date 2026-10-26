@@ -5,6 +5,7 @@ final class GameScene: SKScene {
     // under this node, which is flipped and scaled to fit the screen.
     private let world = SKNode()
     private var scale: CGFloat = 1, offX: CGFloat = 0, offY: CGFloat = 0
+    private var worldOrigin = CGPoint.zero
 
     private let speedBarL = SKShapeNode()
     private let speedBarR = SKShapeNode()
@@ -22,7 +23,10 @@ final class GameScene: SKScene {
     private let scoreLabel = SKLabelNode()
     private let bestLabel = SKLabelNode()
     private var shownScore = -1, shownBest = -1
-    private var flashNodes: [(glow: SKSpriteNode, text: SKLabelNode)] = []
+    private var flashNodes: [FlashNodes] = []
+    private var lastFlashId = 0
+    private var shake: CGFloat = 0          // screen shake amplitude, world units
+    private var slowMo: TimeInterval = 0    // seconds of slow motion left after a big merge
     private var particleNodes: [SKShapeNode] = []
     private let flashTexture = GameScene.makeFlashTexture()
     private var warmup: SKNode?
@@ -59,7 +63,8 @@ final class GameScene: SKScene {
         scale = min((w - 32) / K.W, (h - 32 - 70) / K.H)
         offX = (w - K.W * scale) / 2
         offY = (h - K.H * scale + 60) / 2
-        world.position = CGPoint(x: offX, y: h - offY)
+        worldOrigin = CGPoint(x: offX, y: h - offY)
+        world.position = worldOrigin
         world.xScale = scale
         world.yScale = -scale
         scoreLabel.position = CGPoint(x: w / 2, y: h - (offY - 4))
@@ -72,9 +77,15 @@ final class GameScene: SKScene {
         let dt = lastTime.map { min(0.033, currentTime - $0) } ?? 0
         lastTime = currentTime
         game.clock = currentTime
-        if game.running { game.step(CGFloat(dt)) }
+        // Slow motion eases from 35% back to full speed over its duration.
+        let timeScale = 1 - 0.65 * slowMo / Self.slowMoDuration
+        slowMo = max(0, slowMo - dt)
+        if game.running { game.step(CGFloat(dt * timeScale)) }
+        shake *= CGFloat(exp(-dt * 10))
         render()
     }
+
+    private static let slowMoDuration: TimeInterval = 0.35
 
     // MARK: - Input
 
@@ -121,35 +132,27 @@ final class GameScene: SKScene {
         }
         for n in blobNodes[i...] { n.isHidden = true }
 
-        // merge flashes (soft white glow) and their "+N" labels
+        // New merges kick off a screen shake that grows with the value, and big ones slow time.
+        for f in game.flashes where f.id > lastFlashId {
+            lastFlashId = f.id
+            shake = max(shake, max(0, log2(CGFloat(f.v)) - 1) * 0.7)
+            if f.v >= 512 { slowMo = Self.slowMoDuration }
+        }
+        world.position = CGPoint(x: worldOrigin.x + .random(in: -1...1) * shake * scale,
+                                 y: worldOrigin.y + .random(in: -1...1) * shake * scale)
+
+        // merge flashes: soft white glow, a ring wave in the new colour, and a bouncy "+N"
         while flashNodes.count < game.flashes.count {
-            let glow = SKSpriteNode(texture: flashTexture)
-            glow.zPosition = Z.flash
-            let text = SKLabelNode()
-            text.horizontalAlignmentMode = .center
-            text.verticalAlignmentMode = .baseline
-            text.yScale = -1
-            text.zPosition = Z.flashText
-            world.addChild(glow)
-            world.addChild(text)
-            flashNodes.append((glow, text))
+            let n = FlashNodes(texture: flashTexture)
+            n.glow.zPosition = Z.flash
+            n.ring.zPosition = Z.flash
+            n.text.zPosition = Z.flashText
+            for c in [n.glow, n.ring, n.text] as [SKNode] { world.addChild(c) }
+            flashNodes.append(n)
         }
         for (j, n) in flashNodes.enumerated() {
-            guard j < game.flashes.count else {
-                n.glow.isHidden = true; n.text.isHidden = true
-                continue
-            }
-            let f = game.flashes[j], k = f.t / 0.8
-            n.glow.isHidden = false
-            n.glow.position = CGPoint(x: f.x, y: f.y)
-            n.glow.size = CGSize(width: f.r * 2, height: f.r * 2)
-            n.glow.alpha = 0.95 * (1 - k)
-            n.text.isHidden = false
-            n.text.position = CGPoint(x: f.x, y: f.y - 24 - k * 30)
-            n.text.attributedText = NSAttributedString(string: f.text, attributes: [
-                .font: UIFont.systemFont(ofSize: 16, weight: .heavy),
-                .foregroundColor: UIColor(red: 30 / 255, green: 30 / 255, blue: 30 / 255, alpha: 1 - k),
-            ])
+            guard j < game.flashes.count else { n.hide(); continue }
+            n.show(game.flashes[j])
         }
 
         // particles
@@ -208,6 +211,14 @@ final class GameScene: SKScene {
         }
 
         if game.score != shownScore || game.best != shownBest {
+            if game.score > shownScore && shownScore > 0 {
+                // punch the big score when it goes up
+                scoreLabel.removeAction(forKey: "punch")
+                scoreLabel.setScale(1.25)
+                let back = SKAction.scale(to: 1, duration: 0.25)
+                back.timingMode = .easeOut
+                scoreLabel.run(back, withKey: "punch")
+            }
             shownScore = game.score; shownBest = game.best
             scoreLabel.attributedText = scoreText(String(game.score), size: 48, weight: .black)
             bestLabel.attributedText = scoreText("best \(game.best)", size: 13, weight: .semibold)
@@ -394,5 +405,65 @@ final class GameScene: SKScene {
         n.strokeColor = color
         n.lineWidth = width
         return n
+    }
+}
+
+// The nodes for one merge flash. Reused from a pool; the "+N" text is only rebuilt when the
+// pooled node switches to a different flash.
+private final class FlashNodes {
+    let glow: SKSpriteNode
+    let ring = SKShapeNode()
+    let text = SKLabelNode()
+    private var shownId = 0
+
+    init(texture: SKTexture) {
+        glow = SKSpriteNode(texture: texture)
+        ring.fillColor = .clear
+        text.horizontalAlignmentMode = .center
+        text.verticalAlignmentMode = .baseline
+    }
+
+    func hide() {
+        glow.isHidden = true; ring.isHidden = true; text.isHidden = true
+    }
+
+    func show(_ f: Flash) {
+        let k = f.t / 0.8  // 0...1 over the flash's life
+        glow.isHidden = false
+        glow.position = CGPoint(x: f.x, y: f.y)
+        glow.size = CGSize(width: f.r * 2, height: f.r * 2)
+        glow.alpha = 0.95 * (1 - k)
+
+        // ring: races out from the blob's edge during the first 60% of the flash
+        let rk = min(1, k / 0.6)
+        ring.isHidden = rk >= 1
+        if !ring.isHidden {
+            let ease = 1 - (1 - rk) * (1 - rk) * (1 - rk)
+            let r = f.blobR + (f.r * 1.1 - f.blobR) * ease
+            ring.path = CGPath(ellipseIn: CGRect(x: f.x - r, y: f.y - r, width: r * 2, height: r * 2), transform: nil)
+            ring.lineWidth = 1 + 5 * (1 - rk)
+            ring.alpha = 0.9 * (1 - rk)
+        }
+
+        if shownId != f.id {
+            shownId = f.id
+            ring.strokeColor = K.color(for: f.v)
+            let size = 18 + log2(CGFloat(f.v)) * 1.5
+            var font = UIFont.systemFont(ofSize: size, weight: .black)
+            if let rounded = font.fontDescriptor.withDesign(.rounded) { font = UIFont(descriptor: rounded, size: size) }
+            text.attributedText = NSAttributedString(string: f.text, attributes: [
+                .font: font,
+                .foregroundColor: K.color(for: f.v).mixed(with: .black, by: 0.15),
+                .strokeColor: UIColor.white,
+                .strokeWidth: -4,  // negative: fill and outline
+            ])
+        }
+        // pops in with an overshoot, settles, then floats up and fades
+        let s = k < 0.12 ? 0.4 + k / 0.12 * 0.9 : max(1, 1.3 - (k - 0.12) / 0.15 * 0.3)
+        text.isHidden = false
+        text.xScale = s
+        text.yScale = -s  // negative undoes the world flip
+        text.position = CGPoint(x: f.x, y: f.y - 22 - k * 36)
+        text.alpha = 1 - k * k
     }
 }
