@@ -6,6 +6,9 @@ final class GameScene: SKScene {
     private let world = SKNode()
     private var scale: CGFloat = 1, offX: CGFloat = 0, offY: CGFloat = 0
     private var worldOrigin = CGPoint.zero
+    private let background = SKSpriteNode()
+    private var backgroundSize = CGSize.zero
+    private var bumperNodes: [(stud: SKSpriteNode, glow: SKSpriteNode)] = []
 
     private let speedBarL = SKShapeNode()
     private let speedBarR = SKShapeNode()
@@ -35,6 +38,8 @@ final class GameScene: SKScene {
         super.init(size: size)
         backgroundColor = K.bg
         anchorPoint = .zero
+        background.zPosition = -100
+        addChild(background)
         addChild(world)
         buildCup()
         buildOverlays()
@@ -67,6 +72,12 @@ final class GameScene: SKScene {
         world.position = worldOrigin
         world.xScale = scale
         world.yScale = -scale
+        if size != backgroundSize {
+            backgroundSize = size
+            background.texture = Backdrop.background(size: size, light: CGPoint(x: w / 2, y: offY + K.H * scale * 0.45))
+            background.size = size
+            background.position = CGPoint(x: w / 2, y: h / 2)
+        }
         scoreLabel.position = CGPoint(x: w / 2, y: h - (offY - 4))
         bestLabel.position = CGPoint(x: w / 2, y: h - (offY - 52))
     }
@@ -203,6 +214,15 @@ final class GameScene: SKScene {
 
         updateSpeedBars(conveyorSpeed: game.conveyorSpeed)
 
+        for (i, n) in bumperNodes.enumerated() {
+            let g = game.bumperGlow[i]
+            let s = 1 + 0.12 * g
+            n.stud.xScale = s
+            n.stud.yScale = -s
+            n.stud.colorBlendFactor = 0.45 * g  // tint toward white
+            n.glow.alpha = 0.9 * g
+        }
+
         // danger line pulses when you're about to overflow
         dangerLine.isHidden = game.dangerTime <= 0
         if !dangerLine.isHidden {
@@ -321,23 +341,32 @@ final class GameScene: SKScene {
     private func buildCup() {
         let C = K.Cup.self
 
-        let interior = CGMutablePath()
-        interior.move(to: CGPoint(x: K.segs[0].x1, y: K.segs[0].y1))
-        for s in K.segs { interior.addLine(to: CGPoint(x: s.x2, y: s.y2)) }
-        interior.closeSubpath()
-        let cup = shape(interior, fill: .white)
-        cup.zPosition = Z.cup
-        world.addChild(cup)
+        let center = CGPoint(x: K.W / 2, y: K.H / 2)
+        let pad = Backdrop.shadowPad
+        let shadow = SKSpriteNode(texture: Backdrop.cupShadow(), size: CGSize(width: K.W + pad * 2, height: K.H + pad * 2))
+        let cup = SKSpriteNode(texture: Backdrop.cupInterior(), size: CGSize(width: K.W, height: K.H))
+        for (n, z) in [(shadow, Z.cup - 2), (cup, Z.cup)] {
+            n.position = center
+            n.yScale = -1  // undo the world flip
+            n.zPosition = z
+            world.addChild(n)
+        }
 
+        // shiny studs that light up and pulse when a blob hits them
         for bp in K.bumpers {
-            let ring = shape(CGPath(ellipseIn: CGRect(x: bp.x - bp.r, y: bp.y - bp.r, width: bp.r * 2, height: bp.r * 2), transform: nil),
-                             fill: UIColor(hex: 0x1e64c8))
-            let dot = shape(CGPath(ellipseIn: CGRect(x: bp.x - 3, y: bp.y - 3, width: 6, height: 6), transform: nil),
-                            fill: UIColor(hex: 0x0d2f66))
-            ring.zPosition = Z.bumpers
-            dot.zPosition = Z.bumpers
-            world.addChild(ring)
-            world.addChild(dot)
+            let stud = SKSpriteNode(texture: Backdrop.bumper(r: bp.r), size: CGSize(width: bp.r * 2 + 2, height: bp.r * 2 + 2))
+            stud.yScale = -1
+            stud.color = .white
+            let glow = SKSpriteNode(texture: flashTexture, size: CGSize(width: bp.r * 4.5, height: bp.r * 4.5))
+            glow.color = UIColor(hex: 0x7fc0ff)
+            glow.colorBlendFactor = 1
+            glow.alpha = 0
+            for n in [stud, glow] { n.position = CGPoint(x: bp.x, y: bp.y) }
+            stud.zPosition = Z.bumpers
+            glow.zPosition = Z.bumpers - 0.1
+            world.addChild(glow)
+            world.addChild(stud)
+            bumperNodes.append((stud, glow))
         }
 
         let outlinePath = CGMutablePath()
@@ -389,14 +418,6 @@ final class GameScene: SKScene {
             ctx.cgContext.drawRadialGradient(gradient, startCenter: c, startRadius: 0, endCenter: c, endRadius: d / 2, options: [])
         }
         return SKTexture(image: image)
-    }
-
-    private func shape(_ path: CGPath, fill: UIColor) -> SKShapeNode {
-        let n = SKShapeNode(path: path)
-        n.fillColor = fill
-        n.strokeColor = .clear
-        n.lineWidth = 0
-        return n
     }
 
     private func stroke(_ path: CGPath, color: UIColor, width: CGFloat) -> SKShapeNode {

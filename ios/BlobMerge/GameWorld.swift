@@ -58,6 +58,7 @@ final class GameWorld {
     var blobs: [Blob] = []
     var particles: [Particle] = []
     var flashes: [Flash] = []
+    var bumperGlow: [CGFloat] = [0, 0]  // iOS only: 1 right after a hard hit on that bumper, fades out
     private var flashCount = 0
     var score = 0
     var best = UserDefaults.standard.integer(forKey: GameWorld.bestKey)
@@ -87,7 +88,7 @@ final class GameWorld {
     }
 
     func reset() {
-        blobs = []; conveyor = []; particles = []; flashes = []
+        blobs = []; conveyor = []; particles = []; flashes = []; bumperGlow = [0, 0]
         score = 0; spawnTimer = 0; conveyorSpeed = 28; dangerTime = 0; over = false
         grabbed = nil; aim = nil
         for i in 0..<4 { addToConveyor(x: 40 + CGFloat(i) * 95) }
@@ -158,14 +159,15 @@ final class GameWorld {
         return true
     }
 
-    private func collideCircle(_ o: Blob, _ c: Circle, bounce: CGFloat) -> Bool {
+    /// nil without contact; otherwise the speed the blob hit with (0 if it wasn't moving in).
+    private func collideCircle(_ o: Blob, _ c: Circle, bounce: CGFloat) -> CGFloat? {
         let dx = o.x - c.x, dy = o.y - c.y, d = hypot(dx, dy), m = o.r + c.r
-        if d >= m || d == 0 { return false }
+        if d >= m || d == 0 { return nil }
         let nx = dx / d, ny = dy / d
         o.x = c.x + nx * m; o.y = c.y + ny * m
         let vn = o.vx * nx + o.vy * ny
         if vn < 0 { o.vx -= (1 + bounce) * vn * nx; o.vy -= (1 + bounce) * vn * ny }
-        return true
+        return max(0, -vn)
     }
 
     private func merge(_ a: Blob, _ b: Blob) {
@@ -213,7 +215,11 @@ final class GameWorld {
                 b.x += b.vx * h; b.y += b.vy * h
                 b.rot += b.spin * h; b.spin *= 1 - 1.5 * h
                 for sg in K.segs { collideSeg(b, sg, bounce: 0.25) }
-                for bp in K.bumpers where collideCircle(b, bp, bounce: 0.9) { b.squash = 0.3 }
+                for (i, bp) in K.bumpers.enumerated() {
+                    guard let hit = collideCircle(b, bp, bounce: 0.9) else { continue }
+                    b.squash = 0.3
+                    if hit > 60 { bumperGlow[i] = 1 }
+                }
             }
             // blob-blob (at most one merge per substep)
             var merged: (Blob, Blob)?
@@ -271,6 +277,7 @@ final class GameWorld {
             if b.pop > 0 { b.pop = max(0, b.pop - dt * 3) }
             if b.mergeCooldown > 0 { b.mergeCooldown = max(0, b.mergeCooldown - dt) }
         }
+        for i in bumperGlow.indices { bumperGlow[i] = max(0, bumperGlow[i] - dt * 2.5) }
         for i in particles.indices {
             particles[i].x += particles[i].vx * dt; particles[i].y += particles[i].vy * dt
             particles[i].vy += 300 * dt; particles[i].life -= dt
