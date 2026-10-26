@@ -15,6 +15,7 @@ final class Blob {
     var squash: CGFloat = 0
     var stretch: CGFloat = 1
     var pop: CGFloat = 0
+    var mergeCooldown: CGFloat = 0  // iOS only: seconds until a freshly merged blob may merge again
     let born: TimeInterval
     let id: CGFloat
 
@@ -58,6 +59,7 @@ final class GameWorld {
     var dangerTime: CGFloat = 0
     var over = false
     static let bestKey = "blobmerge-best"
+    static let mergeCooldown: CGFloat = 0.15
     var conveyor: [Blob] = []
     var finger = Finger()
     var grabbed: Blob?
@@ -166,6 +168,7 @@ final class GameWorld {
         let nb = Blob(v: v, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, born: clock)
         nb.vx = (a.vx + b.vx) / 2; nb.vy = (a.vy + b.vy) / 2 - 80
         nb.squash = 0.35; nb.pop = 1
+        nb.mergeCooldown = GameWorld.mergeCooldown
         blobs.removeAll { $0 === a || $0 === b }
         blobs.append(nb)
         score += v
@@ -213,7 +216,12 @@ final class GameWorld {
                     var d = hypot(dx, dy)
                     if d == 0 { d = 0.001 }
                     if d >= m { continue }
-                    if a.v == b.v { merged = (a, b); break pairs }
+                    if a.v == b.v {
+                        // A blob fresh from a merge waits a moment, so chain merges play out step by step.
+                        // Until then the pair neither merges nor pushes apart.
+                        if a.mergeCooldown > 0 || b.mergeCooldown > 0 { continue }
+                        merged = (a, b); break pairs
+                    }
                     let nx = dx / d, ny = dy / d, over = m - d
                     let ma = a.r * a.r, mb = b.r * b.r, tot = ma + mb
                     a.x -= nx * over * mb / tot; a.y -= ny * over * mb / tot
@@ -253,6 +261,7 @@ final class GameWorld {
             b.squash *= 1 - 6 * dt
             b.stretch += (1 - b.stretch) * dt * 4
             if b.pop > 0 { b.pop = max(0, b.pop - dt * 3) }
+            if b.mergeCooldown > 0 { b.mergeCooldown = max(0, b.mergeCooldown - dt) }
         }
         for i in particles.indices {
             particles[i].x += particles[i].vx * dt; particles[i].y += particles[i].vy * dt

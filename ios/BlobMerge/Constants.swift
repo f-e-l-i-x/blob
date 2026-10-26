@@ -64,4 +64,14 @@ extension UIColor {
                   blue: CGFloat(hex & 0xff) / 255,
                   alpha: alpha)
     }
+
+    /// Blend toward `other`; `by` 0 keeps this colour, 1 gives `other`.
+    func mixed(with other: UIColor, by f: CGFloat) -> UIColor {
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        other.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        return UIColor(red: r1 + (r2 - r1) * f, green: g1 + (g2 - g1) * f,
+                       blue: b1 + (b2 - b1) * f, alpha: a1 + (a2 - a1) * f)
+    }
 }
