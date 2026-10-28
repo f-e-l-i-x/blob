@@ -10,6 +10,7 @@ final class GameModel {
     private(set) var phase: Phase = .start
     private(set) var score = 0
     private(set) var best = 0
+    private(set) var newBest = false
     private(set) var hapticsOn = Haptics.enabled
 
     @ObservationIgnored let scene: GameScene
@@ -19,11 +20,14 @@ final class GameModel {
         scene.scaleMode = .resizeFill
         best = scene.game.best
         scene.game.onFling = { Haptics.fling() }
-        scene.game.onMerge = { Haptics.merge($0) }
-        scene.game.onGameOver = { [weak self] in
+        // no merge haptics for the demo blobs on the start screen
+        scene.game.onMerge = { [weak self] v in if self?.phase == .playing { Haptics.merge(v) } }
+        // called after the scene's short overflow sequence
+        scene.onGameOver = { [weak self] in
             guard let self else { return }
             score = scene.game.score
             best = scene.game.best
+            newBest = scene.game.newBest
             phase = .over
         }
     }
@@ -35,7 +39,7 @@ final class GameModel {
     }
 
     func pause() {
-        guard phase == .playing else { return }
+        guard phase == .playing, !scene.game.over else { return }
         scene.pause()
         score = scene.game.score
         phase = .paused

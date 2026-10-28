@@ -5,6 +5,7 @@ enum Haptics {
     private static let light = UIImpactFeedbackGenerator(style: .light)
     private static let medium = UIImpactFeedbackGenerator(style: .medium)
     private static let heavy = UIImpactFeedbackGenerator(style: .heavy)
+    private static let notify = UINotificationFeedbackGenerator()
     private static let enabledKey = "blobmerge-haptics"
 
     /// The bottom bar's toggle; saved across launches.
@@ -17,6 +18,7 @@ enum Haptics {
         light.prepare()
         medium.prepare()
         heavy.prepare()
+        notify.prepare()
     }
 
     static func fling() {
@@ -35,5 +37,15 @@ enum Haptics {
             medium.impactOccurred(intensity: min(1, 0.5 + log2(CGFloat(v)) * 0.06))
             medium.prepare()
         }
+    }
+
+    static func overflow() {
+        guard enabled else { return }
+        notify.notificationOccurred(.error)
+    }
+
+    static func newBest() {
+        guard enabled else { return }
+        notify.notificationOccurred(.success)
     }
 }

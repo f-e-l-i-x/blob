@@ -64,6 +64,9 @@ final class GameWorld {
     var best = UserDefaults.standard.integer(forKey: GameWorld.bestKey)
     var dangerTime: CGFloat = 0
     var over = false
+    // iOS only, for the game-over screen: the blob that overflowed, and whether the score beat the old best.
+    private(set) var overflowBlob: Blob?
+    private(set) var newBest = false
     static let bestKey = "blobmerge-best"
     static let mergeCooldown: CGFloat = 0.15
     var conveyor: [Blob] = []
@@ -90,6 +93,7 @@ final class GameWorld {
     func reset() {
         blobs = []; conveyor = []; particles = []; flashes = []; bumperGlow = [0, 0]
         score = 0; spawnTimer = 0; conveyorSpeed = 28; dangerTime = 0; over = false
+        overflowBlob = nil; newBest = false
         grabbed = nil; aim = nil
         for i in 0..<4 { addToConveyor(x: 40 + CGFloat(i) * 95) }
     }
@@ -294,16 +298,20 @@ final class GameWorld {
         flashes.removeAll { $0.t >= 0.8 }
 
         // overflow check: a settled blob above the danger line for too long ends the game
-        let danger = blobs.contains { $0.y - $0.r < K.dangerY && clock - $0.born > 1.5 && abs($0.vy) < 60 }
+        let culprit = blobs.first { $0.y - $0.r < K.dangerY && clock - $0.born > 1.5 && abs($0.vy) < 60 }
+        let danger = culprit != nil
+        if danger { overflowBlob = culprit }
         dangerTime = danger ? dangerTime + dt : max(0, dangerTime - dt * 2)
         if dangerTime > 2 { gameOver() }
     }
 
     private func gameOver() {
         running = false; over = true
+        newBest = score > best && score > 0
         if score > best {
             best = score
             UserDefaults.standard.set(best, forKey: GameWorld.bestKey)
         }
-        onGameOver?()    }
+        onGameOver?()
+    }
 }

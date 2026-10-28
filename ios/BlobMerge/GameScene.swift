@@ -38,6 +38,12 @@ final class GameScene: SKScene {
     private let flashTexture = GameScene.makeFlashTexture()
     private var warmup: SKNode?
 
+    /// Called once the overflow sequence (freeze, red pulse, shake) has played.
+    var onGameOver: (() -> Void)?
+    // Start screen: blobs drop into the jar on their own behind the title.
+    private var demo = true
+    private var demoTimer: TimeInterval = 0.4
+
     override init(size: CGSize) {
         super.init(size: size)
         backgroundColor = K.bg
@@ -50,13 +56,41 @@ final class GameScene: SKScene {
         buildScore()
         buildWarmup()
         game.reset()
+        game.onGameOver = { [weak self] in self?.playOverflow() }
+        game.running = true  // runs the start-screen demo
     }
 
     func start() {
         warmup?.removeFromParent()
         warmup = nil
+        removeAction(forKey: "gameOver")
+        demo = false
         game.reset()
         game.running = true
+    }
+
+    // Overflow: everything freezes, the blob that overflowed pulses red, the jar shakes, and
+    // only then does the "Overflow!" card come in.
+    private func playOverflow() {
+        shake = max(shake, 5)
+        Haptics.overflow()
+        run(.sequence([.wait(forDuration: 1.1), .run { [weak self] in self?.onGameOver?() }]), withKey: "gameOver")
+    }
+
+    // Drops a small blob into the jar now and then. Score and the danger timer are kept at 0
+    // so the demo never shows a score or ends.
+    private func stepDemo(_ dt: TimeInterval) {
+        demoTimer -= dt
+        if demoTimer <= 0 && game.blobs.count < 10 {
+            demoTimer = .random(in: 0.7...1.2)
+            let v = [1, 1, 2, 2, 2, 4, 4, 8].randomElement()!
+            let b = Blob(v: v, x: .random(in: 90...310), y: 80, born: game.clock)
+            b.vx = .random(in: -60...60)
+            b.spin = .random(in: -3...3)
+            game.blobs.append(b)
+        }
+        game.score = 0
+        game.dangerTime = 0
     }
 
     func pause() {
@@ -111,7 +145,11 @@ final class GameScene: SKScene {
         // Slow motion eases from 35% back to full speed over its duration.
         let timeScale = 1 - 0.65 * slowMo / Self.slowMoDuration
         slowMo = max(0, slowMo - dt)
-        if game.running { game.step(CGFloat(dt * timeScale)) }
+        if game.running {
+            if demo { stepDemo(dt) }
+            game.step(CGFloat(dt * timeScale))
+            if demo { game.score = 0; game.dangerTime = 0 }
+        }
         shake *= CGFloat(exp(-dt * 10))
         render()
     }
@@ -122,7 +160,7 @@ final class GameScene: SKScene {
 
     // Only the first finger down counts, like a single pointer on the web.
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard activeTouch == nil, let t = touches.first else { return }
+        guard !demo, activeTouch == nil, let t = touches.first else { return }
         activeTouch = t
         game.pointerDown(t.location(in: world))
     }
@@ -155,8 +193,16 @@ final class GameScene: SKScene {
             defer { i += 1 }
             return blobNodes[i]
         }
+        let alert = game.over ? game.overflowBlob : nil
         for b in game.blobs {
-            blobNode().show(b, stretchX: b.stretch, selected: false, t: game.clock, z: Z.blobs)
+            let n = blobNode()
+            n.show(b, stretchX: b.stretch, selected: false, t: game.clock, z: Z.blobs)
+            if b === alert {
+                // the blob that overflowed pulses red
+                let p = 0.5 + 0.5 * sin(game.clock * 12)
+                n.strokeColor = UIColor(red: 230 / 255, green: 40 / 255, blue: 45 / 255, alpha: 0.6 + 0.4 * p)
+                n.lineWidth = 3 + 3 * p
+            }
         }
         for b in game.conveyor {
             blobNode().show(b, stretchX: b.stretch, selected: b === game.grabbed, t: game.clock, z: Z.conveyor)
