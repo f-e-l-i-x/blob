@@ -252,8 +252,10 @@ final class GameScene: SKScene {
 
         // touch indicator
         let f = game.finger
-        fingerCircle.isHidden = !f.down
-        fingerDot.isHidden = !f.down
+        // only while aiming a grabbed blob; the finger no longer pokes the jar
+        let aiming = f.down && game.grabbed != nil
+        fingerCircle.isHidden = !aiming
+        fingerDot.isHidden = !aiming
         fingerCircle.position = CGPoint(x: f.x, y: f.y)
         fingerDot.position = fingerCircle.position
 

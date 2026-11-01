@@ -11,9 +11,15 @@ import SpriteKit
 // The number is embossed (light edge up-left, dark edge down-right) and bulged as if printed
 // on a dome. That is baked once per value into a texture; `face` squashes and stretches it
 // with the blob, and it sits under the highlight as if inside the jelly.
+//
+// The jelly deformation (pill stretch, squash along the last hit, stretch along the motion) is
+// one 2x2 matrix. The outline uses it directly; the number gets it split into rotate, scale,
+// rotate (faceTurn, face's scale, faceTurnBack), which SKNodes can express.
 final class BlobNode: SKShapeNode {
     private let body = SKShapeNode()
     private let highlight = SKShapeNode()
+    private let faceTurn = SKNode()
+    private let faceTurnBack = SKNode()
     private let face = SKNode()
     private let number = SKSpriteNode()
     private var shownValue = 0
@@ -26,11 +32,13 @@ final class BlobNode: SKShapeNode {
             n.lineWidth = 0
         }
         body.zPosition = 0.1
-        face.zPosition = 0.2
+        faceTurn.zPosition = 0.2
         highlight.zPosition = 0.6
         highlight.fillColor = UIColor(white: 1, alpha: 0.3)
         addChild(body)
-        addChild(face)
+        addChild(faceTurn)
+        faceTurn.addChild(faceTurnBack)
+        faceTurnBack.addChild(face)
         addChild(highlight)
         // `face` undoes the world flip (negative yScale), so its children use y-up coordinates.
         number.position = CGPoint(x: 0, y: -1)
@@ -55,10 +63,14 @@ final class BlobNode: SKShapeNode {
         highlight.path = outline.copy(using: &glossT)
 
         // Full squash, but only half the pill stretch, so conveyor numbers stay easy to read.
-        let (sx, sy) = Self.squashStretch(for: b, stretchX: 1 + (stretchX - 1) * 0.5)
+        let m = Self.deformation(for: b, stretchX: 1 + (stretchX - 1) * 0.5)
+        let (turn, sx, sy, turnBack) = Self.split(m)
         let grow = 1 + b.pop * 0.25
-        face.xScale = sx * grow
-        face.yScale = -sy * grow
+        faceTurn.zRotation = turn
+        faceTurn.xScale = sx * grow
+        faceTurn.yScale = sy * grow
+        faceTurnBack.zRotation = turnBack
+        face.yScale = -1
 
         if selected {
             strokeColor = K.ink
@@ -135,22 +147,49 @@ final class BlobNode: SKShapeNode {
         return result
     }
 
-    static func squashStretch(for b: Blob, stretchX: CGFloat) -> (sx: CGFloat, sy: CGFloat) {
+    /// Scales by `along` in the direction `angle` and by `across` perpendicular to it.
+    private static func axisScale(_ angle: CGFloat, along: CGFloat, across: CGFloat) -> CGAffineTransform {
+        CGAffineTransform(rotationAngle: -angle)
+            .concatenating(CGAffineTransform(scaleX: along, y: across))
+            .concatenating(CGAffineTransform(rotationAngle: angle))
+    }
+
+    /// Pill stretch, then the squash spring along the last hit's normal (squeezed along it,
+    /// bulging across; negative squash is the rebound stretch), then a stretch along the motion.
+    static func deformation(for b: Blob, stretchX: CGFloat) -> CGAffineTransform {
         let sq = b.squash
-        return (stretchX * (1 + sq), (1 - sq * 0.8) / stretchX.squareRoot())
+        let speed = hypot(b.mvx, b.mvy)
+        let e = min(0.18, speed / 3500)
+        var m = CGAffineTransform(scaleX: stretchX, y: 1 / stretchX.squareRoot())
+            .concatenating(axisScale(b.squashAngle, along: 1 - sq * 0.8, across: 1 + sq))
+        if e > 0.001 {
+            m = m.concatenating(axisScale(atan2(b.mvy, b.mvx), along: 1 + e, across: 1 - e * 0.5))
+        }
+        return m
+    }
+
+    /// Splits a 2x2 matrix into rotate(turn) * scale(sx, sy) * rotate(turnBack) (a closed-form SVD).
+    static func split(_ t: CGAffineTransform) -> (turn: CGFloat, sx: CGFloat, sy: CGFloat, turnBack: CGFloat) {
+        // column-vector form: [[t.a, t.c], [t.b, t.d]]
+        let e = (t.a + t.d) / 2, f = (t.a - t.d) / 2, g = (t.b + t.c) / 2, h = (t.b - t.c) / 2
+        let q = hypot(e, h), r = hypot(f, g)
+        let a1 = atan2(g, f), a2 = atan2(h, e)
+        return ((a2 + a1) / 2, q + r, q - r, (a2 - a1) / 2)
     }
 
     static func path(for b: Blob, stretchX: CGFloat, t: TimeInterval) -> CGPath {
         let n = b.seed.count
-        let (sx, sy) = squashStretch(for: b, stretchX: stretchX)
+        let m = deformation(for: b, stretchX: stretchX)
         let tt = CGFloat(t)
         var pts: [CGPoint] = []
         pts.reserveCapacity(n)
         for i in 0..<n {
             let a = b.rot + CGFloat(i) / CGFloat(n) * .pi * 2
+            // slow idle wobble, plus a faster jiggle after hits and while moving
             let wob = 1 + sin(tt * 3 + CGFloat(i) * 1.7 + b.id * 10) * 0.03
+                + sin(tt * 13 + CGFloat(i) * 2.9 + b.id * 7) * b.jiggle
             let rr = b.r * b.seed[i] * wob * (1 + b.pop * 0.25)
-            pts.append(CGPoint(x: cos(a) * rr * sx, y: sin(a) * rr * sy))
+            pts.append(CGPoint(x: cos(a) * rr, y: sin(a) * rr).applying(m))
         }
         func mid(_ p: CGPoint, _ q: CGPoint) -> CGPoint { CGPoint(x: (p.x + q.x) / 2, y: (p.y + q.y) / 2) }
         let path = CGMutablePath()

@@ -13,6 +13,14 @@ final class Blob {
     var rot: CGFloat
     var spin: CGFloat = 0
     var squash: CGFloat = 0
+    // iOS only, for the jelly look: squash is a damped spring, so after a hit it overshoots
+    // into a stretch and wobbles back. It acts along squashAngle (the hit's normal; default is
+    // straight up, as for landing on the floor). mvx/mvy is the smoothed velocity the blob is
+    // stretched along, and jiggle shakes its outline.
+    var squashV: CGFloat = 0
+    var squashAngle: CGFloat = .pi / 2
+    var mvx: CGFloat = 0, mvy: CGFloat = 0
+    var jiggle: CGFloat = 0
     var stretch: CGFloat = 1
     var pop: CGFloat = 0
     var mergeCooldown: CGFloat = 0  // iOS only: seconds until a freshly merged blob may merge again
@@ -69,6 +77,10 @@ final class GameWorld {
     private(set) var newBest = false
     static let bestKey = "blobmerge-best"
     static let mergeCooldown: CGFloat = 0.15
+    // iOS only: the top row holds at most this many blobs, packed to the right, and only
+    // refills when a blob is flung or two merge.
+    static let conveyorMax = 5
+    static let conveyorRight = K.Cup.r - 2
     var conveyor: [Blob] = []
     var finger = Finger()
     var grabbed: Blob?
@@ -93,16 +105,27 @@ final class GameWorld {
     func reset() {
         blobs = []; conveyor = []; particles = []; flashes = []; bumperGlow = [0, 0]
         score = 0; spawnTimer = 0; conveyorSpeed = 28; dangerTime = 0; over = false
+        nextValue = nil
         overflowBlob = nil; newBest = false
         grabbed = nil; aim = nil
-        for i in 0..<4 { addToConveyor(x: 40 + CGFloat(i) * 95) }
+        // start with a full row, already packed to the right
+        var right = GameWorld.conveyorRight
+        for _ in 0..<GameWorld.conveyorMax {
+            let v = randomValue(), hw = GameWorld.halfWidth(K.radius(for: v))
+            addToConveyor(v: v, x: right - hw)
+            right -= 2 * hw
+        }
     }
 
-    private func addToConveyor(x: CGFloat) {
-        let b = Blob(v: randomValue(), x: x, y: K.conveyorY, born: clock)
+    private func addToConveyor(v: Int, x: CGFloat) {
+        let b = Blob(v: v, x: x, y: K.conveyorY, born: clock)
         b.stretch = 1.6  // conveyor blobs look like stretched pills
         conveyor.append(b)
     }
+
+    /// Half the room a pill takes in the top row; a little under its drawn width, so neighbours squish together.
+    static func halfWidth(_ r: CGFloat) -> CGFloat { r * 1.5 }
+    private var nextValue: Int?
 
     // MARK: - Input
 
@@ -165,7 +188,7 @@ final class GameWorld {
             o.vx -= (1 + bounce) * vn * nx; o.vy -= (1 + bounce) * vn * ny
             let tx = -ny, ty = nx, vt = o.vx * tx + o.vy * ty
             o.vx -= vt * tx * 0.08; o.vy -= vt * ty * 0.08
-            o.squash = min(0.35, o.squash + abs(vn) / 1500)
+            hit(o, min(0.35, o.squash + abs(vn) / 1500), nx, ny)
         }
         return true
     }
@@ -181,14 +204,29 @@ final class GameWorld {
         return max(0, -vn)
     }
 
-    private func merge(_ a: Blob, _ b: Blob) {
+    /// iOS only: a hit squashes the blob along the hit's normal (nx, ny) and shakes its outline.
+    private func hit(_ b: Blob, _ k: CGFloat, _ nx: CGFloat, _ ny: CGFloat) {
+        if k > abs(b.squash) * 0.5 { b.squashAngle = atan2(ny, nx) }
+        b.squash = min(0.38, max(b.squash, k))
+        // only real impacts shake it; resting contacts every substep shouldn't
+        if k > 0.06 { b.jiggle = min(0.09, max(b.jiggle, k * 0.25)) }
+    }
+
+    private func merge(_ a: Blob, _ b: Blob, onConveyor: Bool = false) {
         let v = a.v * 2
-        let nb = Blob(v: v, x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, born: clock)
-        nb.vx = (a.vx + b.vx) / 2; nb.vy = (a.vy + b.vy) / 2 - 80
-        nb.squash = 0.35; nb.pop = 1
+        let nb = Blob(v: v, x: (a.x + b.x) / 2, y: onConveyor ? K.conveyorY : (a.y + b.y) / 2, born: clock)
+        nb.squash = 0.35; nb.pop = 1; nb.jiggle = 0.06
         nb.mergeCooldown = GameWorld.mergeCooldown
-        blobs.removeAll { $0 === a || $0 === b }
-        blobs.append(nb)
+        if onConveyor {
+            // stays in the top row until it is flung
+            nb.stretch = 1.6
+            conveyor.removeAll { $0 === a || $0 === b }
+            conveyor.append(nb)
+        } else {
+            nb.vx = (a.vx + b.vx) / 2; nb.vy = (a.vy + b.vy) / 2 - 80
+            blobs.removeAll { $0 === a || $0 === b }
+            blobs.append(nb)
+        }
         score += v
         flashCount += 1
         flashes.append(Flash(x: nb.x, y: nb.y, r: nb.r * 2.6, t: 0, text: "+\(v)", v: v, blobR: nb.r, id: flashCount))
@@ -204,18 +242,7 @@ final class GameWorld {
     }
 
     func step(_ dt: CGFloat) {
-        // conveyor: blobs drift right and leave on the right
-        for b in conveyor where b !== grabbed {
-            b.x += conveyorSpeed * dt
-            b.stretch += (1.6 - b.stretch) * dt * 5
-        }
-        conveyor.removeAll { $0 !== grabbed && $0.x >= K.W + 40 }
-        // keep a steady supply
-        spawnTimer -= dt
-        let minX = conveyor.reduce(CGFloat(1e9)) { min($0, $1.x) }
-        if conveyor.count < 5 && (minX > 70 || conveyor.isEmpty) && spawnTimer <= 0 {
-            addToConveyor(x: -30); spawnTimer = 0.6
-        }
+        stepConveyor(dt)
 
         // blobs
         let SUB = 4, h = dt / CGFloat(SUB)
@@ -227,9 +254,9 @@ final class GameWorld {
                 b.rot += b.spin * h; b.spin *= 1 - 1.5 * h
                 for sg in K.segs { collideSeg(b, sg, bounce: 0.25) }
                 for (i, bp) in K.bumpers.enumerated() {
-                    guard let hit = collideCircle(b, bp, bounce: 0.9) else { continue }
-                    b.squash = 0.3
-                    if hit > 60 { bumperGlow[i] = 1 }
+                    guard let speed = collideCircle(b, bp, bounce: 0.9) else { continue }
+                    hit(b, speed > 20 ? 0.3 : 0.05, (b.x - bp.x) / (b.r + bp.r), (b.y - bp.y) / (b.r + bp.r))
+                    if speed > 60 { bumperGlow[i] = 1 }
                 }
             }
             // blob-blob (at most one merge per substep)
@@ -257,25 +284,12 @@ final class GameWorld {
                         a.vx -= jimp * nx / ma; a.vy -= jimp * ny / ma
                         b.vx += jimp * nx / mb; b.vy += jimp * ny / mb
                         let k = min(0.3, -rv / 1800)
-                        a.squash = max(a.squash, k); b.squash = max(b.squash, k)
+                        hit(a, k, nx, ny); hit(b, k, nx, ny)
                     }
                 }
             }
             if let (a, b) = merged { merge(a, b) }
-
-            // finger pokes blobs in the cup (unless it is busy aiming a conveyor blob)
-            if finger.down && grabbed == nil {
-                for b in blobs {
-                    let dx = b.x - finger.x, dy = b.y - finger.y, m = b.r + finger.r
-                    var d = hypot(dx, dy)
-                    if d == 0 { d = 0.001 }
-                    if d >= m { continue }
-                    let nx = dx / d, ny = dy / d
-                    b.x = finger.x + nx * m; b.y = finger.y + ny * m
-                    let vn = (b.vx - finger.vx) * nx + (b.vy - finger.vy) * ny
-                    if vn < 0 { b.vx -= 1.3 * vn * nx; b.vy -= 1.3 * vn * ny; b.squash = max(b.squash, 0.25) }
-                }
-            }
+            // iOS: the finger no longer pokes blobs in the cup; it only grabs from the top row.
         }
         if dt > 0 {
             finger.vx = (finger.x - finger.px) / dt; finger.vy = (finger.y - finger.py) / dt
@@ -283,11 +297,14 @@ final class GameWorld {
         }
 
         for b in blobs {
-            b.squash *= 1 - 6 * dt
             b.stretch += (1 - b.stretch) * dt * 4
-            if b.pop > 0 { b.pop = max(0, b.pop - dt * 3) }
-            if b.mergeCooldown > 0 { b.mergeCooldown = max(0, b.mergeCooldown - dt) }
+            // smoothed velocity for the motion stretch; moving blobs keep a little jiggle
+            let k = min(1, dt * 12)
+            b.mvx += (b.vx - b.mvx) * k; b.mvy += (b.vy - b.mvy) * k
+            b.jiggle = max(b.jiggle, min(0.05, hypot(b.vx, b.vy) / 8000))
+            relax(b, dt)
         }
+        for b in conveyor { relax(b, dt) }
         for i in bumperGlow.indices { bumperGlow[i] = max(0, bumperGlow[i] - dt * 2.5) }
         for i in particles.indices {
             particles[i].x += particles[i].vx * dt; particles[i].y += particles[i].vy * dt
@@ -303,6 +320,69 @@ final class GameWorld {
         if danger { overflowBlob = culprit }
         dangerTime = danger ? dangerTime + dt : max(0, dangerTime - dt * 2)
         if dangerTime > 2 { gameOver() }
+    }
+
+    /// Squash spring, jiggle, pop and merge cooldown, once per frame.
+    private func relax(_ b: Blob, _ dt: CGFloat) {
+        // a soft, lightly damped spring: overshoots into a stretch and wobbles back
+        b.squashV += (-230 * b.squash - 7 * b.squashV) * dt
+        b.squash = max(-0.3, min(0.4, b.squash + b.squashV * dt))
+        b.jiggle *= exp(-3 * dt)
+        if b.pop > 0 { b.pop = max(0, b.pop - dt * 3) }
+        if b.mergeCooldown > 0 { b.mergeCooldown = max(0, b.mergeCooldown - dt) }
+    }
+
+    // iOS: the top row is a queue. Blobs drift right until they rest against the right end or
+    // the blob in front, matching neighbours that touch merge in place, and a new blob comes in
+    // from the left only when there is a free spot and room for it.
+    private func stepConveyor(_ dt: CGFloat) {
+        conveyor.sort { $0.x > $1.x }  // front (right) first
+        var limit = GameWorld.conveyorRight
+        var touching: [Bool] = []
+        for (i, b) in conveyor.enumerated() {
+            let hw = GameWorld.halfWidth(b.r), stop = limit - hw
+            if b !== grabbed {
+                b.stretch += (1.6 - b.stretch) * dt * 5
+                if b.x < stop {
+                    let moving = b.vx > 0
+                    b.x = min(stop, b.x + conveyorSpeed * dt)
+                    b.vx = conveyorSpeed
+                    if b.x >= stop && moving {
+                        // bumps into the queue: squish sideways, and the one in front wobbles too
+                        b.vx = 0
+                        hit(b, 0.2, 1, 0)
+                        if i > 0 { hit(conveyor[i - 1], 0.08, 1, 0) }
+                    }
+                } else {
+                    // a merge can leave a bigger blob overlapping; ease it back out of the way
+                    b.x += (stop - b.x) * min(1, dt * 10)
+                    b.vx = 0
+                }
+            }
+            touching.append(b.x >= stop - 1)
+            limit = b.x - hw
+        }
+        for i in conveyor.indices.dropFirst() {
+            let a = conveyor[i - 1], b = conveyor[i]
+            guard a.v == b.v, touching[i], a !== grabbed, b !== grabbed,
+                  a.mergeCooldown <= 0, b.mergeCooldown <= 0 else { continue }
+            merge(a, b, onConveyor: true)
+            break
+        }
+
+        spawnTimer -= dt
+        guard spawnTimer <= 0, conveyor.count < GameWorld.conveyorMax else { return }
+        let v = nextValue ?? randomValue()
+        nextValue = v
+        let hw = GameWorld.halfWidth(K.radius(for: v))
+        let leftEdge = conveyor.map { $0.x - GameWorld.halfWidth($0.r) }.min() ?? GameWorld.conveyorRight
+        // only once it fits fully inside the jar
+        if leftEdge - 2 * hw >= K.Cup.l {
+            addToConveyor(v: v, x: -hw)
+            conveyor.last?.vx = conveyorSpeed
+            nextValue = nil
+            spawnTimer = 0.6
+        }
     }
 
     private func gameOver() {

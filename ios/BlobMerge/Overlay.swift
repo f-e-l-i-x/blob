@@ -68,9 +68,9 @@ private struct OverlayCard: View {
     @ViewBuilder private var start: some View {
         title("Blob Merge")
         VStack(alignment: .leading, spacing: 14) {
-            HowTo(symbol: "hand.draw.fill", text: "Grab a blob from the top, drag to aim, and let go to fling it.")
-            HowTo(symbol: "hand.point.up.left.fill", text: "Poke blobs in the jar to nudge them together.")
-            HowTo(symbol: "arrow.triangle.merge", text: "Matching numbers merge. Don't let the jar overflow.")
+            HowTo(symbol: "hand.draw.fill", text: "Grab a blob from the top row, drag to aim, and let go to fling it into the jar.")
+            HowTo(symbol: "arrow.triangle.merge", text: "Matching numbers merge, in the jar and in the top row.")
+            HowTo(symbol: "exclamationmark.triangle.fill", text: "The top row only refills when there's room. Don't let the jar overflow.")
         }
         Button("Play") { model.play() }
             .buttonStyle(PrimaryButtonStyle())
