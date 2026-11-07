@@ -39,6 +39,13 @@ enum Haptics {
         }
     }
 
+    /// Flipping or advancing a flashcard.
+    static func flip() {
+        guard enabled else { return }
+        light.impactOccurred(intensity: 0.7)
+        light.prepare()
+    }
+
     static func overflow() {
         guard enabled else { return }
         notify.notificationOccurred(.error)

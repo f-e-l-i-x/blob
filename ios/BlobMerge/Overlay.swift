@@ -1,7 +1,7 @@
 import SwiftUI
 
 // The start, "Paused" and "Overflow!" screens: a frosted card over the dimmed game, which
-// springs in and out when the phase changes.
+// springs in and out when the phase changes. The word break shows flip cards instead.
 
 private enum Ink {
     static let title = Color(UIColor(hex: 0x1d2127))
@@ -27,7 +27,13 @@ struct OverlayHost: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)  // the bottom bar's buttons stay usable
                     .transition(.opacity)
-                OverlayCard(model: model)
+                Group {
+                    if model.phase == .flashcards {
+                        FlashcardBreak(model: model)
+                    } else {
+                        OverlayCard(model: model)
+                    }
+                }
                     .transition(.asymmetric(insertion: .scale(scale: 0.88).combined(with: .opacity).combined(with: .offset(y: 24)),
                                             removal: .scale(scale: 0.96).combined(with: .opacity)))
             }
@@ -116,6 +122,155 @@ private struct OverlayCard: View {
         Button("Play again") { model.play() }
             .buttonStyle(PrimaryButtonStyle())
             .padding(.top, 4)
+    }
+}
+
+// MARK: - Word break
+
+/// "Word break" title, progress dots and the current card. A new card slides in from the
+/// right while the previous one slides out to the left.
+private struct FlashcardBreak: View {
+    let model: GameModel
+    @State private var lastTap = Date.distantPast
+
+    var body: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 10) {
+                Text("Word break")
+                    .font(rounded(30, .heavy))
+                    .foregroundStyle(Ink.title)
+                HStack(spacing: 8) {
+                    ForEach(model.cards.indices, id: \.self) { i in
+                        Capsule()
+                            .fill(i <= model.cardIndex ? Color(K.button) : Ink.soft.opacity(0.3))
+                            .frame(width: i == model.cardIndex ? 22 : 8, height: 8)
+                    }
+                }
+            }
+            .padding(.vertical, 14)
+            .padding(.horizontal, 28)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).strokeBorder(.white.opacity(0.7), lineWidth: 1))
+            .shadow(color: .black.opacity(0.12), radius: 16, y: 8)
+
+            ZStack {
+                if model.cards.indices.contains(model.cardIndex) {
+                    FlipCard(angle: model.cardFlipped ? 180 : 0,
+                             word: model.cards[model.cardIndex],
+                             last: model.cardIndex == model.cards.count - 1)
+                        .id(model.cardIndex)
+                        .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity),
+                                                removal: .move(edge: .leading).combined(with: .opacity)))
+                }
+            }
+            .frame(width: 290, height: 360)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // ignore a second tap while the card is still turning
+                guard Date().timeIntervalSince(lastTap) > 0.35 else { return }
+                lastTap = Date()
+                model.tapCard()
+            }
+        }
+        .animation(.spring(response: 0.55, dampingFraction: 0.78), value: model.cardFlipped)
+        .animation(.spring(response: 0.5, dampingFraction: 0.85), value: model.cardIndex)
+    }
+}
+
+/// One card, turned around its vertical axis by `angle`: the Spanish side up to 90 degrees,
+/// the English side after. Animatable, so the face swaps exactly when the card is edge-on.
+private struct FlipCard: View, Animatable {
+    var angle: Double
+    let word: Word
+    let last: Bool
+
+    var animatableData: Double {
+        get { angle }
+        set { angle = newValue }
+    }
+
+    var body: some View {
+        ZStack {
+            if angle < 90 {
+                front
+            } else {
+                back.rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
+            }
+        }
+        .frame(width: 270, height: 340)
+        .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: 0.45)
+    }
+
+    private var typeName: String {
+        switch word.type {
+        case "noun": "noun"
+        case "adj": "adjective"
+        default: "verb"
+        }
+    }
+
+    private var front: some View {
+        face(tint: nil) {
+            label("SPANISH")
+            Spacer()
+            Text(word.es)
+                .font(rounded(40, .heavy))
+                .foregroundStyle(Ink.title)
+            Text(typeName)
+                .font(rounded(15, .semibold))
+                .foregroundStyle(Ink.soft)
+            Spacer()
+            hint("Tap to see the answer", symbol: "hand.tap.fill")
+        }
+    }
+
+    private var back: some View {
+        face(tint: Color(K.button)) {
+            label("ENGLISH")
+            Spacer()
+            Text(word.en)
+                .font(rounded(36, .heavy))
+                .foregroundStyle(Ink.title)
+            Text(word.es)
+                .font(rounded(17, .semibold))
+                .foregroundStyle(Ink.body)
+            Spacer()
+            hint(last ? "Tap to play again" : "Tap for the next word",
+                 symbol: last ? "play.fill" : "arrow.right")
+        }
+    }
+
+    private func face<Content: View>(tint: Color?, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 8) { content() }
+            .multilineTextAlignment(.center)
+            .minimumScaleFactor(0.5)
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 30, style: .continuous).fill(.regularMaterial)
+                    if let tint {
+                        // the answer side is washed in the button blue from the top
+                        RoundedRectangle(cornerRadius: 30, style: .continuous)
+                            .fill(LinearGradient(colors: [tint.opacity(0.22), tint.opacity(0.04)], startPoint: .top, endPoint: .bottom))
+                    }
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous).strokeBorder(.white.opacity(0.7), lineWidth: 1))
+            .shadow(color: .black.opacity(0.18), radius: 30, y: 14)
+    }
+
+    private func label(_ s: String) -> some View {
+        Text(s)
+            .font(rounded(12, .bold))
+            .kerning(1.5)
+            .foregroundStyle(Ink.soft)
+    }
+
+    private func hint(_ s: String, symbol: String) -> some View {
+        Label(s, systemImage: symbol)
+            .font(rounded(14, .semibold))
+            .foregroundStyle(Color(K.button))
     }
 }
 

@@ -5,13 +5,22 @@ import SpriteKit
 @MainActor
 @Observable
 final class GameModel {
-    enum Phase { case start, playing, paused, over }
+    enum Phase { case start, playing, paused, over, flashcards }
+
+    /// Seconds of play between word breaks. In Debug builds, the launch argument
+    /// `-flashcardInterval <seconds>` overrides it for testing.
+    static let breakInterval: TimeInterval = 3 * 60
+    static let cardsPerBreak = 3
 
     private(set) var phase: Phase = .start
     private(set) var score = 0
     private(set) var best = 0
     private(set) var newBest = false
     private(set) var hapticsOn = Haptics.enabled
+    // The word break: three cards, each shown in Spanish until tapped, then in English.
+    private(set) var cards: [Word] = []
+    private(set) var cardIndex = 0
+    private(set) var cardFlipped = false
 
     @ObservationIgnored let scene: GameScene
 
@@ -29,6 +38,39 @@ final class GameModel {
             best = scene.game.best
             newBest = scene.game.newBest
             phase = .over
+        }
+        var interval = Self.breakInterval
+        #if DEBUG
+        let override = UserDefaults.standard.double(forKey: "flashcardInterval")
+        if override > 0 { interval = override }
+        #endif
+        scene.breakInterval = interval
+        scene.onBreakDue = { [weak self] in self?.startBreak() }
+    }
+
+    private func startBreak() {
+        guard phase == .playing, !scene.game.over else { return }
+        scene.pause()
+        score = scene.game.score
+        cards = Words.pick(Self.cardsPerBreak)
+        cardIndex = 0
+        cardFlipped = false
+        guard !cards.isEmpty else { return scene.resume() }  // no word list: keep playing
+        phase = .flashcards
+    }
+
+    /// Tap on the card: flip to the English side, then on to the next word; after the last
+    /// one a fresh game starts.
+    func tapCard() {
+        guard phase == .flashcards else { return }
+        Haptics.flip()
+        if !cardFlipped {
+            cardFlipped = true
+        } else if cardIndex + 1 < cards.count {
+            cardIndex += 1
+            cardFlipped = false
+        } else {
+            play()
         }
     }
 

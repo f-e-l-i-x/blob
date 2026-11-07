@@ -40,6 +40,11 @@ final class GameScene: SKScene {
 
     /// Called once the overflow sequence (freeze, red pulse, shake) has played.
     var onGameOver: (() -> Void)?
+    /// Seconds of actual play (not the start-screen demo, pauses or game over), carried
+    /// across games; onBreakDue fires and the count restarts once it reaches breakInterval.
+    var playTime: TimeInterval = 0
+    var breakInterval: TimeInterval = .infinity
+    var onBreakDue: (() -> Void)?
     // Start screen: blobs drop into the jar on their own behind the title.
     private var demo = true
     private var demoTimer: TimeInterval = 0.4
@@ -149,6 +154,13 @@ final class GameScene: SKScene {
             if demo { stepDemo(dt) }
             game.step(CGFloat(dt * timeScale))
             if demo { game.score = 0; game.dangerTime = 0 }
+        }
+        if game.running && !demo && !game.over {
+            playTime += dt
+            if playTime >= breakInterval {
+                playTime = 0
+                onBreakDue?()
+            }
         }
         shake *= CGFloat(exp(-dt * 10))
         render()
